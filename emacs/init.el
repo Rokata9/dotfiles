@@ -939,6 +939,68 @@ runInTerminal launcher\". Without it, program output shows in *dape-repl*.")
 (defvar my/light-theme 'modus-operandi)
 (defvar my/dark-theme 'vscode-dark-plus)
 
+;; Classic colors = Modus Operandi as in Emacs 29 (Modus 3), the look in
+;; Claude's screenshots. Emacs 31 ships Modus 5, which changed some code
+;; colors and paints file / folder icons and folder names blue.
+;; Set to nil for Emacs 31's own Modus colors.
+(defvar my/classic-colors t)
+
+(when my/classic-colors
+  ;; Code colors: Modus 3 values for the Modus 5 palette names.
+  (setq modus-operandi-palette-overrides
+        '((keyword      "#5317ac")       ; if, return, while
+          (type         "#005a5f")       ; int, char, struct names
+          (variable     "#00538b")       ; names where they are declared
+          (property     "#00538b")       ; struct fields
+          (string       "#2544bb")
+          (constant     "#0000c0")       ; NULL, true, enum values
+          (comment      "#505050")
+          (docstring    "#2a486a")
+          (rx-backslash "#654d0f")       ; \n inside strings
+          ;; Calls and later uses of a name stay plain text, as in Emacs 29.
+          (fnname-call  fg-main)         ; printf(...)
+          (variable-use fg-main)         ; x in  y = x + 1
+          ;; Current line and line numbers.
+          (bg-hl-line   "#e0e0e0")
+          (fg-line-number-inactive "#505050")
+          (bg-line-number-inactive "#f8f8f8")
+          (bg-line-number-active   "#d7d7d7")))
+
+  ;; Icons and explorer folder names: the icon packages' own colors
+  ;; (orange folders, blue C files, ...) instead of Modus 5's blue.
+  (defun my/classic-ui-colors ()
+    "Undo Modus 5's colors for icons and explorer folder names."
+    (dolist (face (face-list))
+      (cond
+       ((and (string-match-p "\\`\\(treemacs-\\)?nerd-icons-" (symbol-name face))
+             (get face 'face-defface-spec))
+        ;; The face's own spec, on top of the theme. `:foreground unspecified'
+        ;; first drops the theme's color, so an `:inherit' in the spec works.
+        (face-spec-set
+         face
+         (mapcar (lambda (clause)          ; (DISPLAY . ATTRS) or (DISPLAY ATTRS)
+                   (let ((attrs (if (keywordp (cadr clause)) (cdr clause) (cadr clause))))
+                     (cons (car clause) (append '(:foreground unspecified) attrs))))
+                 (get face 'face-defface-spec))
+         'face-override-spec))
+       ((memq face '(treemacs-directory-face treemacs-directory-collapsed-face))
+        (face-spec-set face '((t :foreground unspecified)) 'face-override-spec))))
+    ;; Explorer title and git colors of file names (light theme only).
+    (pcase-dolist (`(,face . ,attrs)
+                   '((treemacs-root-face :foreground "#0000c0" :weight bold
+                                         :underline t :height 1.2)
+                     (treemacs-git-untracked-face :foreground "#505050") ; new file
+                     (treemacs-git-ignored-face   :foreground "#505050")
+                     (treemacs-git-added-face     :foreground "#005e00" :weight bold)
+                     (treemacs-git-modified-face  :foreground "#813e00" :weight bold)
+                     (treemacs-git-conflict-face  :foreground "#a60000" :weight bold)))
+      (when (facep face)
+        (face-spec-set face `((((background light)) ,@attrs)) 'face-override-spec))))
+  ;; These packages load later; fix their faces as each one arrives.
+  (dolist (feature '(nerd-icons nerd-icons-completion nerd-icons-dired
+                     treemacs treemacs-nerd-icons))
+    (with-eval-after-load feature (my/classic-ui-colors))))
+
 (use-package vscode-dark-plus-theme :ensure t :defer t)
 
 (defun my/apply-theme (appearance)
