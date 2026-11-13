@@ -13,7 +13,9 @@
 #   3. Emacs+ (Emacs 31)         /Applications/Emacs.app
 #   4. Tools                     ripgrep (Cmd+Shift+F search);
 #                                LLVM only if Apple's clangd / lldb-dap are missing
-#   5. Fonts                     JetBrains Mono (editor text),
+#   5. Fonts                     editor fonts: Hack (the one init.el uses,
+#                                see my/font), DejaVu Sans Mono, Ubuntu Mono,
+#                                JetBrains Mono;
 #                                Symbols Nerd Font Mono (icons, the exact
 #                                version the icon package expects)
 #
@@ -86,7 +88,7 @@ step "Emacs+ (GNU Emacs 31)"
 # Any Emacs+ variant counts (cask emacs-plus-app@next, formula emacs-plus@31, ...).
 formulas="$(brew list --formula 2>/dev/null || true)"
 casks="$(brew list --cask 2>/dev/null || true)"
-if grep -q '^emacs-plus' <<<"$formulas$casks"; then
+if grep -q '^emacs-plus' <<<"$formulas"$'\n'"$casks"; then
   ok "installed"
 elif [[ -d /Applications/Emacs.app ]]; then
   note "/Applications/Emacs.app exists but is not Emacs+; leaving it alone."
@@ -132,8 +134,15 @@ fi
 
 # --- 5. Fonts -----------------------------------------------------------------
 step "Fonts"
-font_exists "JetBrainsMono*" || brew install --cask font-jetbrains-mono
-ok "JetBrains Mono"
+# Editor fonts. init.el uses Hack (`my/font'); the others are there to try.
+font_cask() {   # font_cask CASK FILE-PATTERN NAME
+  font_exists "$2" || brew install --cask "$1"
+  ok "$3"
+}
+font_cask font-hack           "Hack-*"           "Hack"
+font_cask font-dejavu         "DejaVuSansMono*"  "DejaVu Sans Mono"
+font_cask font-ubuntu-mono    "UbuntuMono-*"     "Ubuntu Mono"
+font_cask font-jetbrains-mono "JetBrainsMono*"   "JetBrains Mono"
 
 # Another copy of the icon font with the same name can hide this one, and
 # then new icons show as boxes with hex codes (e.g. collapsed folders).

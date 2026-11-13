@@ -130,11 +130,22 @@
   (prog-mode . display-line-numbers-mode)
   (prog-mode . hl-line-mode))
 
-;; Font: first one that is installed wins.
+;; Editor font. To switch, change the name below and restart Emacs.
+;; Installed by setup-mac.sh: "Hack", "DejaVu Sans Mono", "Ubuntu Mono",
+;; "JetBrains Mono". On every Mac: "Menlo". Ubuntu Mono is drawn smaller;
+;; give it a size of about 15.
+(defvar my/font "Hack")
+(defvar my/font-size 13)                ; points
+
+;; Used when `my/font' isn't installed: the first one that is.
+(defvar my/font-fallbacks '("JetBrains Mono" "SF Mono" "Menlo"))
+
 (when (display-graphic-p)
   (when-let* ((font (seq-find (lambda (f) (find-font (font-spec :family f)))
-                              '("JetBrains Mono" "SF Mono" "Menlo"))))
-    (set-face-attribute 'default nil :family font :height 130)))
+                              (cons my/font my/font-fallbacks))))
+    (set-face-attribute 'default nil :family font :height (* 10 my/font-size))
+    ;; Code blocks in hover popups, Markdown, etc. use the same font.
+    (set-face-attribute 'fixed-pitch nil :family font)))
 
 ;; Esc cancels things, like everywhere else on macOS (Emacs' own key: C-g).
 (keymap-global-set "<escape>" #'keyboard-escape-quit)
