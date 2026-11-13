@@ -991,6 +991,55 @@ Output appears in the bottom panel; you can type program input there."
 (defvar my/light-theme 'modus-operandi)
 (defvar my/dark-theme 'vscode-dark-plus)
 
+;; Your code colors, on top of the light theme. Change a value, restart Emacs.
+;; Keywords (if, return, static, and in C also int, void, char, unsigned):
+;; all one color, bold. Other dark pinks to try: "#8b2252" (Emacs' classic
+;; string color), "#721045" (wine).
+(defvar my/keyword-color "#a3144d")     ; Dracula's pink, darkened for light backgrounds
+(defvar my/keyword-bold t)
+
+(setq modus-operandi-palette-overrides
+      `((keyword      ,my/keyword-color)
+        (variable-use fg-main)))        ; a name where it's used: plain text
+
+;; Light theme only (the dark theme keeps its own look).
+(face-spec-set 'font-lock-keyword-face
+               (and my/keyword-bold '((((background light)) :weight bold)))
+               'face-override-spec)
+(face-spec-set 'font-lock-property-use-face ; p->age where used: plain text
+               '((((background light)) :inherit unspecified :foreground unspecified))
+               'face-override-spec)
+
+;; C / C++: built-in types are keywords of the language, so give them the
+;; keyword color too. Other types (struct names, size_t, FILE) keep the
+;; type color.
+(defvar c-ts-mode--type-keywords)
+(defconst my/c-type-keywords
+  (regexp-opt '("void" "char" "short" "int" "long" "float" "double"
+                "signed" "unsigned" "bool" "_Bool" "_Complex" "_Imaginary"
+                "wchar_t" "char8_t" "char16_t" "char32_t")
+              'symbols)
+  "Built-in type names that are keywords. The grammar also calls size_t,
+int32_t, ... built-in types, but those are ordinary type names.")
+
+(defun my/c-types-as-keywords ()
+  "Color int, void, char, unsigned, ... (and C++ const) like keywords."
+  (let* ((lang (if (derived-mode-p 'c++-ts-mode) 'cpp 'c))
+         (rules (treesit-font-lock-rules
+                 :language lang :feature 'keyword :override t
+                 `(((primitive_type) @font-lock-keyword-face
+                    (:match ,my/c-type-keywords @font-lock-keyword-face))
+                   [,@c-ts-mode--type-keywords] @font-lock-keyword-face
+                   ,@(when (eq lang 'cpp)
+                       '((type_qualifier) @font-lock-keyword-face))))))
+    (if (fboundp 'treesit-add-font-lock-rules) ; Emacs 31
+        (treesit-add-font-lock-rules rules)
+      (setq-local treesit-font-lock-settings
+                  (append treesit-font-lock-settings rules))
+      (treesit-font-lock-recompute-features))))
+(add-hook 'c-ts-mode-hook #'my/c-types-as-keywords)
+(add-hook 'c++-ts-mode-hook #'my/c-types-as-keywords)
+
 ;; Classic colors = Modus Operandi as in Emacs 29 (Modus 3), the look in
 ;; Claude's screenshots. Emacs 31 ships Modus 5, which changed some code
 ;; colors and paints file / folder icons and folder names blue.
@@ -999,9 +1048,11 @@ Output appears in the bottom panel; you can type program input there."
 
 (when my/classic-colors
   ;; Code colors: Modus 3 values for the Modus 5 palette names.
+  ;; (Keywords and variable uses: see "Your code colors" above.)
   (setq modus-operandi-palette-overrides
-        '((keyword      "#5317ac")       ; if, return, while
-          (type         "#005a5f")       ; int, char, struct names
+        (append
+         modus-operandi-palette-overrides
+         '((type         "#005a5f")       ; struct names, size_t
           (variable     "#00538b")       ; names where they are declared
           (property     "#00538b")       ; struct fields
           (string       "#2544bb")
@@ -1009,14 +1060,13 @@ Output appears in the bottom panel; you can type program input there."
           (comment      "#505050")
           (docstring    "#2a486a")
           (rx-backslash "#654d0f")       ; \n inside strings
-          ;; Calls and later uses of a name stay plain text, as in Emacs 29.
+          ;; Calls stay plain text, as in Emacs 29.
           (fnname-call  fg-main)         ; printf(...)
-          (variable-use fg-main)         ; x in  y = x + 1
           ;; Current line and line numbers.
           (bg-hl-line   "#e0e0e0")
           (fg-line-number-inactive "#505050")
           (bg-line-number-inactive "#f8f8f8")
-          (bg-line-number-active   "#d7d7d7")))
+          (bg-line-number-active   "#d7d7d7"))))
 
   ;; Icons and explorer folder names: the icon packages' own colors
   ;; (orange folders, blue C files, ...) instead of Modus 5's blue.
