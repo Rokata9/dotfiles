@@ -713,7 +713,8 @@ Without this, the explorer closes every buffer visiting a moved file."
 ;;   Cmd+Shift+B    build the file in the current buffer
 ;;   Ctrl+Option+N  build it, then run it (type program input in the panel)
 ;;   F5             build it, then start it in the debugger (stops at F9 breakpoints)
-;;                  Program output shows in *dape-repl* (see `my/debug-in-terminal').
+;;                  The program reads and prints in the *Program* panel; type its
+;;                  input there. The debugger's own console is *dape-repl*.
 ;;   Shift+F5       stop: the debug session, the running program or the build
 ;;
 ;; Default for any C / C++ file:
@@ -836,12 +837,47 @@ Output appears in the bottom panel; you can type program input there."
           (compile (cdr task) t))
       (user-error "Not a C / C++ file, and no `my/run-command' in .dir-locals.el"))))
 
-(defvar my/debug-in-terminal nil
-  "Non-nil: run the debugged program in its own terminal buffer (`:runInTerminal'),
-so it can read keyboard input. Off by default: with Apple's lldb-dap this
-mode often fails with \"Timed out trying to get messages from the
-runInTerminal launcher\". Without it, program output shows in *dape-repl*.")
-(put 'my/debug-in-terminal 'safe-local-variable #'booleanp) ; can be set per project
+;; The debugged program's input and output: the *Program* panel, like the
+;; TERMINAL tab in VS Code. What you type there goes to the program
+;; (scanf, getchar, ...); the debug console (*dape-repl*) talks to the
+;; debugger only. How: Emacs opens a pseudo-terminal for the panel, and
+;; lldb connects the program's stdin / stdout / stderr to it (lldb settings
+;; target.input-path, target.output-path, target.error-path). Emacs' own
+;; gdb front end (M-x gdb) does the same.
+(define-derived-mode my/program-mode comint-mode "Program"
+  "Input and output of the program being debugged."
+  (setq-local comint-process-echoes t)   ; the terminal echoes what you type; show it once
+  (add-hook 'comint-output-filter-functions #'comint-strip-ctrl-m nil t))
+
+(defvar my/program-pending nil
+  "Non-nil: show *Program* when the debug session starts.")
+
+(defun my/program-terminal ()
+  "Empty the *Program* panel, give it a new terminal, return the terminal's name."
+  (require 'comint)
+  (let ((buf (get-buffer-create "*Program*")))
+    (with-current-buffer buf
+      (unless (derived-mode-p 'my/program-mode) (my/program-mode))
+      (let ((inhibit-read-only t)) (erase-buffer))
+      (let ((process-connection-type t))      ; a pseudo-terminal, not a pipe
+        (comint-exec buf "program" nil nil nil)) ; nil = terminal only, no command
+      (let ((proc (get-buffer-process buf)))
+        (set-process-query-on-exit-flag proc nil)
+        (set-process-sentinel proc #'ignore)  ; no "Process ... finished" lines
+        (process-tty-name proc)))))
+
+(defun my/program-show ()
+  "On debug start: show *Program* in the bottom panel and put the cursor there."
+  (when my/program-pending
+    (setq my/program-pending nil)
+    (when-let* ((buf (get-buffer "*Program*"))
+                (win (display-buffer buf)))
+      (select-window win)
+      (goto-char (point-max)))))
+;; After dape loads: adding earlier would replace dape's own start hooks
+;; (debug console, variables) instead of joining them.
+(with-eval-after-load 'dape
+  (add-hook 'dape-start-hook #'my/program-show 90))
 
 (declare-function dape "dape")
 (declare-function dape-continue "dape")
@@ -867,13 +903,20 @@ runInTerminal launcher\". Without it, program output shows in *dape-repl*.")
       (message "F5: building, then debugging %s" (cdr program))
       ;; `compile' = build first (VS Code "preLaunchTask"); dape only
       ;; starts the debugger if the build succeeds.
-      (let ((spec (format "lldb-dap :program %S%s%s"
+      (let ((spec (format "lldb-dap :program %S%s"
                           (expand-file-name (cdr program) (car program))
-                          (if my/debug-in-terminal " :runInTerminal t" "")
-                          (if build (format " compile %S" (cdr build)) ""))))
+                          (if build (format " compile %S" (cdr build)) "")))
+            (tty (my/program-terminal)))
         (pcase-let ((`(,key ,config) (dape--config-from-string spec)))
-          (let ((default-directory (car program)))
-            (dape (dape--config-eval key config))))))
+          (let ((default-directory (car program))
+                (config (dape--config-eval key config)))
+            ;; Before launch: connect the program to the *Program* terminal.
+            (setq config (plist-put config :preRunCommands
+                                    (vector (concat "settings set target.input-path " tty)
+                                            (concat "settings set target.output-path " tty)
+                                            (concat "settings set target.error-path " tty))))
+            (setq my/program-pending t)
+            (dape config)))))
      (t (call-interactively #'dape)))))
 
 ;; Stop, like VS Code's Shift+F5:
@@ -1045,7 +1088,7 @@ runInTerminal launcher\". Without it, program output shows in *dape-repl*.")
 (defun my/context-menu-stop (menu _click)
   "Put \"Stop\" at the top of the right-click MENU while something runs here."
   (when (or (my/run-process (current-buffer))
-            (and (derived-mode-p 'dape-repl-mode) (my/debug-live-p)))
+            (and (derived-mode-p 'dape-repl-mode 'my/program-mode) (my/debug-live-p)))
     (define-key menu [my-stop-separator] menu-bar-separator)
     (define-key menu [my-stop] '(menu-item "Stop" my/stop)))
   menu)
@@ -1083,7 +1126,7 @@ runInTerminal launcher\". Without it, program output shows in *dape-repl*.")
 
 ;; Bottom panel: terminal, build / run output, problems -- one strip.
 (defconst my/panel-regexp
-  "\\`\\*\\(compilation\\|.*eat\\|Flymake diagnostics.*\\|xref\\)\\*\\'")
+  "\\`\\*\\(compilation\\|Program\\|.*eat\\|Flymake diagnostics.*\\|xref\\)\\*\\'")
 (setq window-sides-vertical t)          ; explorer full height, panel under the editor
 (add-to-list 'display-buffer-alist
              `(,my/panel-regexp
