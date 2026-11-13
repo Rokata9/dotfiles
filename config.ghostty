@@ -1,0 +1,47 @@
+# ------------------------------------------------------------------------------
+# 1. VISUAL AESTHETIC & THE GLASS LAYER
+# ------------------------------------------------------------------------------
+theme = light:Cobalt2, dark:Catppuccin Mocha
+
+
+# Controlled transparency (Value from 0.0 to 1.0)
+background-opacity = 0.95
+
+
+# Native window blur intensity (Accepts integers, typically 1 to 20)
+background-blur = 15
+
+
+# On macOS, seamlessly integrate tabs cleanly into the titlebar line
+macos-titlebar-style = tabs
+
+
+# ------------------------------------------------------------------------------
+# 2. TYPOGRAPHY & PADDING
+# ------------------------------------------------------------------------------
+# Breathing room margins separating text from the physical window border
+window-padding-x = 14
+window-padding-y = 14
+
+
+# ------------------------------------------------------------------------------
+# 3. CURSOR & INTERACTION DEFAULTS
+# ------------------------------------------------------------------------------
+cursor-style = block
+cursor-style-blink = true
+shell-integration-features = no-cursor,sudo,title,ssh-terminfo,ssh-env
+
+
+mouse-hide-while-typing = true
+copy-on-select = clipboard
+
+
+# ------------------------------------------------------------------------------
+# 4. MACOS NATIVE KEYBINDS
+# ------------------------------------------------------------------------------
+# Treat the left Option key as Alt (enables Option+Left/Right/Backspace word jumps)
+# Ghostty handles the actual keybinds (alt+arrow_left, super+arrow_left) by default!
+macos-option-as-alt = left
+keybind = super+v=paste_from_clipboard
+keybind = super+shift+arrow_left=previous_tab
+keybind = super+shift+arrow_right=next_tab
