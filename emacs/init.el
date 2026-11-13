@@ -7,8 +7,8 @@
 ;; Looks (section 13) add the VS Code layout: light/dark themes, tabs,
 ;; explorer, breadcrumbs, status bar, floating command palette, icons.
 ;;
-;; Icons need the font "Symbols Nerd Font Mono". Section 13 installs the
-;; version the icon package is made for on first start (~/Library/Fonts/NFM.ttf).
+;; New Mac: run ~/.emacs.d/setup-mac.sh once first. It installs Homebrew,
+;; Emacs+, the fonts and the tools this file uses.
 ;;
 ;; Key notation:  C- = Control   M- = Option   s- = Cmd   S- = Shift
 
@@ -668,7 +668,7 @@ Without this, the explorer closes every buffer visiting a moved file."
 (declare-function eat-project "eat")
 
 (defun my/terminal-toggle ()
-  "Ctrl+~ / Ctrl+`: show the project terminal, or hide it when you are in it."
+  "Ctrl+`: show the project terminal, or hide it when you are in it."
   (interactive)
   (if (derived-mode-p 'eat-mode)
       (if (window-parameter nil 'window-side)
@@ -676,15 +676,13 @@ Without this, the explorer closes every buffer visiting a moved file."
         (quit-window))                  ; terminal in a normal window
     (eat-project)))
 
-(keymap-global-set "C-~" #'my/terminal-toggle)        ; Ctrl+~
 (keymap-global-set "C-`" #'my/terminal-toggle)        ; Ctrl+`
 
 (use-package eat
   :ensure t
   :defer t
   :config
-  ;; Inside the terminal, keys go to the shell; keep these two for Emacs.
-  (keymap-set eat-semi-char-mode-map "C-~" #'my/terminal-toggle)
+  ;; Inside the terminal, keys go to the shell; keep this one for Emacs.
   (keymap-set eat-semi-char-mode-map "C-`" #'my/terminal-toggle))
 
 
@@ -1070,7 +1068,7 @@ runInTerminal launcher\". Without it, program output shows in *dape-repl*.")
 ;; Cmd+Shift+P  command palette     Cmd+1        explorer
 ;; Cmd+K F      close folder        File menu    Open Recent Folder
 ;; Cmd+B        go to definition    Cmd+[        go back
-;; Ctrl+~       terminal            Cmd+J        bottom panel
+;; Ctrl+\\=`       terminal            Cmd+J        bottom panel
 ;; Cmd+K Cmd+T  light / dark theme  Cmd+K Cmd+I  hover info at cursor
 ;; F5           build + debug       Shift+F5     stop
 
