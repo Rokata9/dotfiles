@@ -198,6 +198,13 @@
 ;; Gives completion, diagnostics, go-to-definition, references, rename,
 ;; quick fixes, inlay hints and formatting for C / C++.
 
+;; Semantic highlighting (clangd coloring code by meaning, new in Emacs 31):
+;; off, so code colors come from one place, the theme setup in section 13.
+;; When on, clangd paints over it: every use of a variable gets colored,
+;; a static local variable gets the bold keyword color, calls get colored.
+;; Like VS Code's "editor.semanticHighlighting.enabled". t = on.
+(defvar my/semantic-highlighting nil)
+
 (use-package eglot
   :ensure nil
   :hook ((c-mode c-ts-mode c++-mode c++-ts-mode) . eglot-ensure)
@@ -212,7 +219,9 @@
   ;; pairs braces on each key; clangd editing the same Enter at the same
   ;; time put the cursor before "}" instead of on the indented line.
   ;; clangd still formats on save and with C-c f.
-  (eglot-ignored-server-capabilities '(:documentOnTypeFormattingProvider))
+  (eglot-ignored-server-capabilities
+   `(:documentOnTypeFormattingProvider
+     ,@(unless my/semantic-highlighting '(:semanticTokensProvider))))
   ;; No JSON logging = less work per message. To debug Eglot itself,
   ;; delete this line and use M-x eglot-events-buffer.
   (eglot-events-buffer-config '(:size 0 :format full))
