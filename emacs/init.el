@@ -7,8 +7,8 @@
 ;; Looks (section 13) add the VS Code layout: light/dark themes, tabs,
 ;; explorer, breadcrumbs, status bar, floating command palette, icons.
 ;;
-;; One-time font install for the icons:
-;;   brew install --cask font-symbols-only-nerd-font
+;; Icons need the font "Symbols Nerd Font Mono". Section 13 installs the
+;; version the icon package is made for on first start (~/Library/Fonts/NFM.ttf).
 ;;
 ;; Key notation:  C- = Control   M- = Option   s- = Cmd   S- = Shift
 
@@ -663,9 +663,29 @@ Without this, the explorer closes every buffer visiting a moved file."
   (advice-add 'treemacs-move-file :around #'my/explorer-keep-buffers))
 
 
+;; Terminal in the project root, in the bottom panel. Like VS Code's Ctrl+`:
+;; opens it (or jumps to it); pressed inside the terminal, hides it.
+(declare-function eat-project "eat")
+
+(defun my/terminal-toggle ()
+  "Ctrl+~ / Ctrl+`: show the project terminal, or hide it when you are in it."
+  (interactive)
+  (if (derived-mode-p 'eat-mode)
+      (if (window-parameter nil 'window-side)
+          (delete-window)               ; hide the bottom panel
+        (quit-window))                  ; terminal in a normal window
+    (eat-project)))
+
+(keymap-global-set "C-~" #'my/terminal-toggle)        ; Ctrl+~
+(keymap-global-set "C-`" #'my/terminal-toggle)        ; Ctrl+`
+
 (use-package eat
   :ensure t
-  :bind ("C-`" . eat-project))          ; Ctrl+`  terminal in the project root
+  :defer t
+  :config
+  ;; Inside the terminal, keys go to the shell; keep these two for Emacs.
+  (keymap-set eat-semi-char-mode-map "C-~" #'my/terminal-toggle)
+  (keymap-set eat-semi-char-mode-map "C-`" #'my/terminal-toggle))
 
 
 ;;;; 11. Debugger: Dape + lldb-dap ----------------------------------------------
@@ -675,8 +695,7 @@ Without this, the explorer closes every buffer visiting a moved file."
 
 (use-package dape
   :ensure t
-  :bind (("S-<f5>"  . dape-quit)                  ; Shift+F5  stop
-         ("<f9>"    . dape-breakpoint-toggle)     ; F9        breakpoint
+  :bind (("<f9>"    . dape-breakpoint-toggle)     ; F9        breakpoint
          ("<f10>"   . dape-next)                  ; F10       step over
          ("<f11>"   . dape-step-in)               ; F11       step into
          ("S-<f11>" . dape-step-out))             ; Shift+F11 step out
@@ -697,6 +716,7 @@ Without this, the explorer closes every buffer visiting a moved file."
 ;;   Ctrl+Option+N  build it, then run it (type program input in the panel)
 ;;   F5             build it, then start it in the debugger (stops at F9 breakpoints)
 ;;                  Program output shows in *dape-repl* (see `my/debug-in-terminal').
+;;   Shift+F5       stop: the debug session, the running program or the build
 ;;
 ;; Default for any C / C++ file:
 ;;   clang -g -O0 -Wall <compile_flags.txt> FILE -o build/FILE-without-.c
@@ -858,9 +878,53 @@ runInTerminal launcher\". Without it, program output shows in *dape-repl*.")
             (dape (dape--config-eval key config))))))
      (t (call-interactively #'dape)))))
 
+;; Stop, like VS Code's Shift+F5:
+;;   F5 debug session       ends it (the program is killed)
+;;   Ctrl+Option+N program  gets Ctrl+C, also while it waits for input
+;;   Cmd+Shift+B build      is stopped
+;; A program that ignores Ctrl+C is killed by a second Shift+F5.
+;; Also: right-click > Stop in the output pane, or C-c C-c there.
+;; Ctrl+D at the end of the pane ends the input instead (EOF), for
+;; programs that read until end of input.
+(declare-function dape-quit "dape")
+
+(defun my/run-process (&optional buffer)
+  "The live build / run process in BUFFER, or else the most recent one."
+  (seq-some (lambda (buf)
+              (with-current-buffer buf
+                (when-let* (((or (derived-mode-p 'compilation-mode)
+                                 (bound-and-true-p compilation-shell-minor-mode)))
+                            (proc (get-buffer-process buf))
+                            ((process-live-p proc)))
+                  proc)))
+            (if buffer (list buffer) (buffer-list))))
+
+(defun my/debug-live-p ()
+  "Non-nil while a debug session runs."
+  (and (featurep 'dape) (dape--live-connection 'parent t)))
+
+(defun my/stop ()
+  "Shift+F5: stop debugging, or stop the running program or build."
+  (interactive)
+  (let ((here (my/run-process (current-buffer)))) ; the output pane you are in
+    (cond
+     ((and (not here) (my/debug-live-p))
+      (dape-quit)
+      (message "Stopped debugging"))
+     ((when-let* ((proc (or here (my/run-process))))
+        (if (process-get proc 'my/stop-sent)
+            (progn (kill-process proc)            ; 2nd press: force (SIGKILL)
+                   (message "Killed the program"))
+          (process-put proc 'my/stop-sent t)
+          (interrupt-process proc)                ; 1st press: Ctrl+C (SIGINT)
+          (message "Stopping... (press Shift+F5 again if it keeps running)"))
+        t))
+     (t (message "Nothing is running")))))
+
 (keymap-global-set "s-B"   #'my/build)                    ; Cmd+Shift+B
 (keymap-global-set "C-M-n" #'my/run)                      ; Ctrl+Option+N
 (keymap-global-set "<f5>"  #'my/debug-start-or-continue)  ; F5
+(keymap-global-set "S-<f5>" #'my/stop)                    ; Shift+F5
 
 
 ;;;; 13. VS Code look ----------------------------------------------------------
@@ -917,9 +981,22 @@ runInTerminal launcher\". Without it, program output shows in *dape-repl*.")
   (define-key menu [my-clear] '(menu-item "Clear" comint-clear-buffer))
   menu)
 
+;; Right-click > "Stop" (Shift+F5) in the same panes, while something runs.
+(defun my/context-menu-stop (menu _click)
+  "Put \"Stop\" at the top of the right-click MENU while something runs here."
+  (when (or (my/run-process (current-buffer))
+            (and (derived-mode-p 'dape-repl-mode) (my/debug-live-p)))
+    (define-key menu [my-stop-separator] menu-bar-separator)
+    (define-key menu [my-stop] '(menu-item "Stop" my/stop)))
+  menu)
+
 (add-hook 'comint-mode-hook
           (lambda ()
-            (add-hook 'context-menu-functions #'my/context-menu-clear 90 t)))
+            (add-hook 'context-menu-functions #'my/context-menu-clear 90 t)
+            (add-hook 'context-menu-functions #'my/context-menu-stop 91 t)))
+(add-hook 'compilation-mode-hook        ; Cmd+Shift+B build output
+          (lambda ()
+            (add-hook 'context-menu-functions #'my/context-menu-stop 91 t)))
 (setopt window-divider-default-places t ; 1px lines between panes
         window-divider-default-right-width 1
         window-divider-default-bottom-width 1)
@@ -931,8 +1008,9 @@ runInTerminal launcher\". Without it, program output shows in *dape-repl*.")
 ;; Cmd+Shift+P  command palette     Cmd+1        explorer
 ;; Cmd+K F      close folder        File menu    Open Recent Folder
 ;; Cmd+B        go to definition    Cmd+[        go back
-;; Ctrl+\\=`       terminal            Cmd+J        bottom panel
+;; Ctrl+~       terminal            Cmd+J        bottom panel
 ;; Cmd+K Cmd+T  light / dark theme  Cmd+K Cmd+I  hover info at cursor
+;; F5           build + debug       Shift+F5     stop
 
 ")
 
@@ -964,8 +1042,63 @@ runInTerminal launcher\". Without it, program output shows in *dape-repl*.")
       (call-interactively #'eat-project))))
 (keymap-global-set "s-j" #'my/panel-toggle)
 
-;; Icons (need the Nerd Font from the top of this file).
+;; Icons. They come from the font "Symbols Nerd Font Mono". An older copy
+;; of it lacks newer icons, which then show as boxes with hex codes
+;; (e.g. collapsed folders in the explorer: E6AD, F107F). So on start,
+;; check the font has them; if not, install the matching font once.
 (use-package nerd-icons :ensure t :defer t)
+
+(declare-function nerd-icons-install-fonts "nerd-icons")
+(defvar nerd-icons-font-family)
+
+(defconst my/icons-test-chars '(#xe6ad     ; closed folder (explorer)
+                                #xf107f)   ; build / .cache folder
+  "Newer icons; an up-to-date icon font has all of them.")
+
+(defun my/icons-font ()
+  "The installed icon font, or nil."
+  (require 'nerd-icons)
+  (find-font (font-spec :family nerd-icons-font-family)))
+
+(defun my/icons-font-ok-p ()
+  "Non-nil when the icon font is installed and new enough."
+  (when-let* ((entity (my/icons-font))
+              (font (if (fboundp 'open-font) (open-font entity) entity)))
+    (seq-every-p (lambda (c) (font-has-char-p font c)) my/icons-test-chars)))
+
+(defun my/icons-font-file ()
+  "Where `nerd-icons-install-fonts' puts the font."
+  (if (eq system-type 'darwin)
+      (expand-file-name "~/Library/Fonts/NFM.ttf")
+    (expand-file-name "fonts/NFM.ttf"
+                      (or (getenv "XDG_DATA_HOME") "~/.local/share"))))
+
+(defun my/icons-ensure-font ()
+  "Install the icon font when it is missing or too old (once)."
+  (when (and (display-graphic-p) (not (my/icons-font-ok-p)))
+    (if (file-exists-p (my/icons-font-file))
+        ;; Already installed by us, so an older copy wins: tell how to fix.
+        (display-warning
+         'icons
+         (concat "Some icons show as boxes: an older \"Symbols Nerd Font\" "
+                 "is installed next to the new one (" (my/icons-font-file) ").\n"
+                 "Open Font Book, search \"Symbols Nerd Font\", remove all copies "
+                 "except NFM.ttf (or: brew uninstall --cask font-symbols-only-nerd-font), "
+                 "then restart Emacs.")
+         :error)
+      (message "Icons: installing the icon font (one time)...")
+      (condition-case err
+          (progn
+            (nerd-icons-install-fonts t)
+            (clear-font-cache)
+            (if (my/icons-font-ok-p)
+                (message "Icons: font installed")
+              (message "Icons: font installed. Restart Emacs to see all icons")))
+        (error (message "Icons: could not download the font (%s). Try later: M-x nerd-icons-install-fonts"
+                        (error-message-string err)))))))
+
+(add-hook 'emacs-startup-hook
+          (lambda () (run-with-idle-timer 1 nil #'my/icons-ensure-font)))
 
 (use-package nerd-icons-completion          ; icons in Cmd+P / M-x lists
   :ensure t
