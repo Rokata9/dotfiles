@@ -135,17 +135,72 @@
 ;; "JetBrains Mono". On every Mac: "Menlo". Ubuntu Mono is drawn smaller;
 ;; give it a size of about 15.
 (defvar my/font "Hack")
-(defvar my/font-size 13)                ; points
+(defvar my/font-size 16)                ; points
+;; Steps finer than 1 don't show on a Mac: Emacs draws fonts at whole pixel
+;; sizes there, so 13.5 looks like 14. (A fraction is still accepted.)
 
 ;; Used when `my/font' isn't installed: the first one that is.
 (defvar my/font-fallbacks '("JetBrains Mono" "SF Mono" "Menlo"))
 
-(when (display-graphic-p)
-  (when-let* ((font (seq-find (lambda (f) (find-font (font-spec :family f)))
-                              (cons my/font my/font-fallbacks))))
-    (set-face-attribute 'default nil :family font :height (* 10 my/font-size))
+;; Zoom, like VS Code: Cmd+= / Cmd+- make the text bigger / smaller in every
+;; window by `my/font-size-step' points, and Emacs remembers it on this Mac
+;; (in ~/.emacs.d/font-zoom.eld). Cmd+0 goes back to `my/font-size'.
+;; So each Mac (laptop, 24" monitor, ultrawide) keeps its own size.
+(defvar my/font-size-step 1)
+(defvar my/font-zoom-file (locate-user-emacs-file "font-zoom.eld"))
+
+(defvar my/font-zoom
+  (or (ignore-errors
+        (with-temp-buffer
+          (insert-file-contents my/font-zoom-file)
+          (let ((n (read (current-buffer)))) (and (numberp n) n))))
+      0)
+  "Points that Cmd+= / Cmd+- added to `my/font-size'.")
+
+(defvar my/font-family nil
+  "The editor font in use: `my/font', or the first installed fallback.")
+
+(defun my/font-apply (&rest _)
+  "Set the editor font: `my/font-family' at `my/font-size' plus the zoom."
+  (when my/font-family
+    (set-face-attribute 'default nil :family my/font-family)
     ;; Code blocks in hover popups, Markdown, etc. use the same font.
-    (set-face-attribute 'fixed-pitch nil :family font)))
+    (set-face-attribute 'fixed-pitch nil :family my/font-family))
+  ;; Emacs counts font sizes in tenths of a point: 13.5 pt = 135.
+  (set-face-attribute 'default nil
+                      :height (round (* 10 (+ my/font-size my/font-zoom)))))
+
+(when (display-graphic-p)
+  (setq my/font-family (seq-find (lambda (f) (find-font (font-spec :family f)))
+                                 (cons my/font my/font-fallbacks)))
+  (my/font-apply))
+
+;; The settings above must win. A font saved from the menu (Options > Set
+;; Default Font..., then Options > Save Options) goes to custom.el and is
+;; put back every time a theme loads, which would undo them. So set the
+;; font again after each theme (at startup and on Cmd+K Cmd+T).
+(add-hook 'enable-theme-functions #'my/font-apply)
+
+(defun my/font-zoom-by (points)
+  "Zoom all windows by POINTS (0 = no zoom) and remember it."
+  (setq my/font-zoom (if (zerop points) 0
+                       (max (+ my/font-zoom points) (- 6 my/font-size)))) ; >= 6 pt
+  (my/font-apply)
+  (if (zerop my/font-zoom)
+      (ignore-errors (delete-file my/font-zoom-file))
+    (with-temp-file my/font-zoom-file (prin1 my/font-zoom (current-buffer))))
+  (message "Font size: %g pt%s" (+ my/font-size my/font-zoom)
+           (if (zerop my/font-zoom) ""
+             (format "   (Cmd+0: back to %g)" my/font-size))))
+
+(defun my/font-bigger ()  "Cmd+=" (interactive) (my/font-zoom-by my/font-size-step))
+(defun my/font-smaller () "Cmd+-" (interactive) (my/font-zoom-by (- my/font-size-step)))
+(defun my/font-reset ()   "Cmd+0" (interactive) (my/font-zoom-by 0))
+
+(keymap-global-set "s-=" #'my/font-bigger)   ; Cmd+=
+(keymap-global-set "s-+" #'my/font-bigger)   ; Cmd+Shift+= (Cmd++)
+(keymap-global-set "s--" #'my/font-smaller)  ; Cmd+-
+(keymap-global-set "s-0" #'my/font-reset)    ; Cmd+0
 
 ;; Esc cancels things, like everywhere else on macOS (Emacs' own key: C-g).
 (keymap-global-set "<escape>" #'keyboard-escape-quit)
@@ -795,20 +850,32 @@ Without this, the explorer closes every buffer visiting a moved file."
     (goto-char (point-min))
     (re-search-forward my/main-regexp nil t)))
 
+(defun my/main-files (dir)
+  "The .c files in DIR (subfolders too) that define main()."
+  (seq-filter #'my/defines-main-p (directory-files-recursively dir "\\.c\\'")))
+
 (defun my/program-folder (file root)
-  "Program FILE belongs to, relative to ROOT (what %p becomes):
-- a .c / .cpp file with its own main(), other than main.c, is a program
-  on its own: exercises/sum.c -> \"exercises/sum\";
-- else the nearest folder at or above FILE that has a main.c: \"hello\";
+  "Program FILE belongs to, relative to ROOT (what %p becomes). Same
+rules as the Makefile:
+- a folder with a main.c is one program: hello/greet.c -> \"hello\";
+- any other .c / .cpp file with its own main() is a program on its own:
+  exercises/sum.c -> \"exercises/sum\". That includes a main.c next to
+  other files with a main(): pointers/main.c -> \"pointers/main\";
 - else (shared code) the program used last in this project."
-  (let ((program
-         (if (and (member (file-name-extension file) '("c" "cc" "cpp"))
-                  (not (equal (file-name-nondirectory file) "main.c"))
-                  (my/defines-main-p file))
-             (file-name-sans-extension (file-relative-name file root))
-           (when-let* ((dir (locate-dominating-file file "main.c"))
-                       ((file-in-directory-p dir root)))
-             (directory-file-name (file-relative-name dir root))))))
+  (let* ((dir (when-let* ((d (locate-dominating-file file "main.c"))
+                          ((file-in-directory-p d root)))
+                d))
+         ;; A main.c that shares its folder with other main() files is
+         ;; just one of several one-file programs there.
+         (shared (and dir (cdr (my/main-files dir))))
+         (program
+          (cond
+           ((and (member (file-name-extension file) '("c" "cc" "cpp"))
+                 (or shared (not (equal (file-name-nondirectory file) "main.c")))
+                 (my/defines-main-p file))
+            (file-name-sans-extension (file-relative-name file root)))
+           ((and dir (not shared))
+            (directory-file-name (file-relative-name dir root))))))
     (if program
         (setf (alist-get root my/last-program nil nil #'equal) program)
       (or (alist-get root my/last-program nil nil #'equal)
@@ -1208,6 +1275,7 @@ int32_t, ... built-in types, but those are ordinary type names.")
 ;; Ctrl+\\=`       terminal            Cmd+J        bottom panel
 ;; Cmd+K Cmd+T  light / dark theme  Cmd+K Cmd+I  hover info at cursor
 ;; F5           build + debug       Shift+F5     stop
+;; Cmd+= Cmd+-  text size           Cmd+0        default text size
 
 ")
 
