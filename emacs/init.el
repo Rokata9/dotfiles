@@ -743,9 +743,12 @@ Without this, the explorer closes every buffer visiting a moved file."
 ;; A project can replace the defaults in its .dir-locals.el:
 ;;   %f = current file, relative to the project root  (VS Code ${relativeFile})
 ;;   %e = the same without the extension
-;;   %p = the program the file belongs to: the nearest folder at or above
-;;        it that has a main.c (e.g. programs/hello). In a file outside
-;;        any program (e.g. shared code), the last program used.
+;;   %p = the program the file belongs to:
+;;        a .c file with its own main() (other than main.c) is a program on
+;;        its own: exercises/sum.c -> exercises/sum;
+;;        otherwise the nearest folder at or above it that has a main.c
+;;        (e.g. programs/hello). In a file outside any program (e.g.
+;;        shared code), the last program used.
 ;;   ((nil . ((my/build-command . "./scripts/build.sh %f")
 ;;            (my/run-command   . "./scripts/run.sh %f")
 ;;            (my/debug-program . "build/%e"))))
@@ -753,7 +756,7 @@ Without this, the explorer closes every buffer visiting a moved file."
 ;;   ((nil . ((my/build-command . "make")
 ;;            (my/run-command   . "make run")
 ;;            (my/debug-program . "build/app"))))
-;; Many programs, one per folder with a main.c:
+;; Many programs, one per folder with a main.c or per file with a main():
 ;;   ((nil . ((my/build-command . "make PROG=%p")
 ;;            (my/run-command   . "make run PROG=%p")
 ;;            (my/debug-program . "build/%p"))))
@@ -780,15 +783,36 @@ Without this, the explorer closes every buffer visiting a moved file."
 (defvar my/last-program nil
   "Alist (ROOT . PROGRAM-FOLDER): the program last used in each project.")
 
+(defconst my/main-regexp "^[ \t]*\\(?:int\\|void\\)[ \t]+main[ \t]*("
+  "A line that starts the main() function. Same test as the Makefile's.")
+
+(defun my/defines-main-p (file)
+  "Non-nil if FILE defines main(). Reads its buffer if open (unsaved text too)."
+  (with-temp-buffer
+    (if-let* ((buf (find-buffer-visiting file)))
+        (insert-buffer-substring buf)
+      (insert-file-contents file))
+    (goto-char (point-min))
+    (re-search-forward my/main-regexp nil t)))
+
 (defun my/program-folder (file root)
-  "Program FILE belongs to, relative to ROOT: the nearest folder at or
-above FILE that has a main.c. Outside any program, the last one used."
-  (let ((dir (locate-dominating-file file "main.c")))
-    (if (and dir (file-in-directory-p dir root))
-        (setf (alist-get root my/last-program nil nil #'equal)
-              (directory-file-name (file-relative-name dir root)))
+  "Program FILE belongs to, relative to ROOT (what %p becomes):
+- a .c / .cpp file with its own main(), other than main.c, is a program
+  on its own: exercises/sum.c -> \"exercises/sum\";
+- else the nearest folder at or above FILE that has a main.c: \"hello\";
+- else (shared code) the program used last in this project."
+  (let ((program
+         (if (and (member (file-name-extension file) '("c" "cc" "cpp"))
+                  (not (equal (file-name-nondirectory file) "main.c"))
+                  (my/defines-main-p file))
+             (file-name-sans-extension (file-relative-name file root))
+           (when-let* ((dir (locate-dominating-file file "main.c"))
+                       ((file-in-directory-p dir root)))
+             (directory-file-name (file-relative-name dir root))))))
+    (if program
+        (setf (alist-get root my/last-program nil nil #'equal) program)
       (or (alist-get root my/last-program nil nil #'equal)
-          (user-error "Not inside a program: open a file in a folder that has a main.c")))))
+          (user-error "Not inside a program: open a .c file with a main(), or a file in a folder that has a main.c")))))
 
 (defun my/file-task (template &optional from-dir-locals)
   "Expand TEMPLATE for the current file. Return (ROOT . STRING) or nil.
