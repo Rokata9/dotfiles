@@ -742,17 +742,13 @@ Without this, the explorer closes every buffer visiting a moved file."
 
 (keymap-global-set "C-`" #'my/terminal-toggle)        ; Ctrl+`
 
-(set-face-attribute 'default nil
-                    :font "Hack"
-                    :height 130
-                    :weight 'regular)
-
 (use-package eat
   :ensure t
   :defer t
   :config
   ;; Inside the terminal, keys go to the shell; keep this one for Emacs.
   (keymap-set eat-semi-char-mode-map "C-`" #'my/terminal-toggle))
+
 
 
 ;;;; 11. Debugger: Dape + lldb-dap ----------------------------------------------
@@ -939,7 +935,10 @@ Output appears in the bottom panel; you can type program input there."
 ;; gdb front end (M-x gdb) does the same.
 (define-derived-mode my/program-mode comint-mode "Program"
   "Input and output of the program being debugged."
-  (setq-local comint-process-echoes t)   ; the terminal echoes what you type; show it once
+  ;; Must stay nil: Emacs creates this terminal with echo turned off, so the
+  ;; program never repeats your input. With t, Emacs deleted the program's
+  ;; next output whenever it matched what you typed (e.g. puts of a name).
+  (setq-local comint-process-echoes nil)
   (add-hook 'comint-output-filter-functions #'comint-strip-ctrl-m nil t))
 
 (defvar my/program-pending nil
