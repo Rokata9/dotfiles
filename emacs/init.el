@@ -135,72 +135,17 @@
 ;; "JetBrains Mono". On every Mac: "Menlo". Ubuntu Mono is drawn smaller;
 ;; give it a size of about 15.
 (defvar my/font "Hack")
-(defvar my/font-size 16)                ; points
-;; Steps finer than 1 don't show on a Mac: Emacs draws fonts at whole pixel
-;; sizes there, so 13.5 looks like 14. (A fraction is still accepted.)
+(defvar my/font-size 14)                ; points
 
 ;; Used when `my/font' isn't installed: the first one that is.
 (defvar my/font-fallbacks '("JetBrains Mono" "SF Mono" "Menlo"))
 
-;; Zoom, like VS Code: Cmd+= / Cmd+- make the text bigger / smaller in every
-;; window by `my/font-size-step' points, and Emacs remembers it on this Mac
-;; (in ~/.emacs.d/font-zoom.eld). Cmd+0 goes back to `my/font-size'.
-;; So each Mac (laptop, 24" monitor, ultrawide) keeps its own size.
-(defvar my/font-size-step 1)
-(defvar my/font-zoom-file (locate-user-emacs-file "font-zoom.eld"))
-
-(defvar my/font-zoom
-  (or (ignore-errors
-        (with-temp-buffer
-          (insert-file-contents my/font-zoom-file)
-          (let ((n (read (current-buffer)))) (and (numberp n) n))))
-      0)
-  "Points that Cmd+= / Cmd+- added to `my/font-size'.")
-
-(defvar my/font-family nil
-  "The editor font in use: `my/font', or the first installed fallback.")
-
-(defun my/font-apply (&rest _)
-  "Set the editor font: `my/font-family' at `my/font-size' plus the zoom."
-  (when my/font-family
-    (set-face-attribute 'default nil :family my/font-family)
-    ;; Code blocks in hover popups, Markdown, etc. use the same font.
-    (set-face-attribute 'fixed-pitch nil :family my/font-family))
-  ;; Emacs counts font sizes in tenths of a point: 13.5 pt = 135.
-  (set-face-attribute 'default nil
-                      :height (round (* 10 (+ my/font-size my/font-zoom)))))
-
 (when (display-graphic-p)
-  (setq my/font-family (seq-find (lambda (f) (find-font (font-spec :family f)))
-                                 (cons my/font my/font-fallbacks)))
-  (my/font-apply))
-
-;; The settings above must win. A font saved from the menu (Options > Set
-;; Default Font..., then Options > Save Options) goes to custom.el and is
-;; put back every time a theme loads, which would undo them. So set the
-;; font again after each theme (at startup and on Cmd+K Cmd+T).
-(add-hook 'enable-theme-functions #'my/font-apply)
-
-(defun my/font-zoom-by (points)
-  "Zoom all windows by POINTS (0 = no zoom) and remember it."
-  (setq my/font-zoom (if (zerop points) 0
-                       (max (+ my/font-zoom points) (- 6 my/font-size)))) ; >= 6 pt
-  (my/font-apply)
-  (if (zerop my/font-zoom)
-      (ignore-errors (delete-file my/font-zoom-file))
-    (with-temp-file my/font-zoom-file (prin1 my/font-zoom (current-buffer))))
-  (message "Font size: %g pt%s" (+ my/font-size my/font-zoom)
-           (if (zerop my/font-zoom) ""
-             (format "   (Cmd+0: back to %g)" my/font-size))))
-
-(defun my/font-bigger ()  "Cmd+=" (interactive) (my/font-zoom-by my/font-size-step))
-(defun my/font-smaller () "Cmd+-" (interactive) (my/font-zoom-by (- my/font-size-step)))
-(defun my/font-reset ()   "Cmd+0" (interactive) (my/font-zoom-by 0))
-
-(keymap-global-set "s-=" #'my/font-bigger)   ; Cmd+=
-(keymap-global-set "s-+" #'my/font-bigger)   ; Cmd+Shift+= (Cmd++)
-(keymap-global-set "s--" #'my/font-smaller)  ; Cmd+-
-(keymap-global-set "s-0" #'my/font-reset)    ; Cmd+0
+  (when-let* ((font (seq-find (lambda (f) (find-font (font-spec :family f)))
+                              (cons my/font my/font-fallbacks))))
+    (set-face-attribute 'default nil :family font :height (* 10 my/font-size))
+    ;; Code blocks in hover popups, Markdown, etc. use the same font.
+    (set-face-attribute 'fixed-pitch nil :family font)))
 
 ;; Esc cancels things, like everywhere else on macOS (Emacs' own key: C-g).
 (keymap-global-set "<escape>" #'keyboard-escape-quit)
@@ -484,10 +429,47 @@
           (and buffer-file-name (my/project-root-of buffer-file-name))))
   my/buffer-project-root)
 
+;; Tabs work like VS Code windows: each opened folder has its own tabs.
+;; A file belongs to the folder it was opened in, not to where it lives:
+;; a file dragged in from Finder (or opened from another folder with
+;; C-x C-f) becomes one more tab of the current folder. Only Cmd+O / Open
+;; Folder starts a new set of tabs.
+(defvar my/open-folders nil
+  "Roots of the folders opened like VS Code windows (each has its own tabs).")
+(defvar my/opening-group nil
+  "When non-nil, the folder that files opened right now belong to.")
+(defvar-local my/buffer-group nil
+  "The folder (root) this file buffer belongs to as a tab, or \"Other\".")
+
+(defun my/group-of (buf)
+  "Tab group of BUF: the folder it was opened in."
+  (or (buffer-local-value 'my/buffer-group buf)
+      (with-current-buffer buf (my/buffer-project-root))))
+
+(defun my/current-group ()
+  "Tab group of the file you are in, else of the last file you were in."
+  (seq-some (lambda (b) (buffer-local-value 'my/buffer-group b))
+            (cons (window-buffer (selected-window))
+                  (seq-filter #'buffer-file-name (buffer-list)))))
+
+(defun my/assign-group ()
+  "Give a newly opened file its tab group (runs from `find-file-hook')."
+  (unless my/buffer-group
+    (let ((root (my/buffer-project-root)))
+      (setq my/buffer-group
+            (or my/opening-group                         ; Cmd+O, reopening a folder
+                (car (member root my/open-folders))      ; a file of an opened folder
+                (my/current-group)                       ; anything else: join current tabs
+                root                                     ; first file in a fresh Emacs
+                "Other"))
+      (unless (equal my/buffer-group "Other")
+        (add-to-list 'my/open-folders my/buffer-group)))))
+(add-hook 'find-file-hook #'my/assign-group)
+
 (defun my/project-file-buffers (root)
-  "Open buffers visiting files in ROOT, most recently used first."
-  (seq-filter (lambda (buf)
-                (equal root (with-current-buffer buf (my/buffer-project-root))))
+  "Open file buffers in ROOT's tabs, most recently used first."
+  (seq-filter (lambda (buf) (and (buffer-file-name buf)
+                                 (equal root (my/group-of buf))))
               (buffer-list)))
 
 (defun my/session-touch (root)
@@ -509,8 +491,9 @@
   "Save the open files of every open folder to `my/sessions-file'."
   (my/sessions-load)
   (dolist (root (reverse (delete-dups
-                          (delq nil (mapcar (lambda (b) (with-current-buffer b (my/buffer-project-root)))
-                                            (buffer-list))))))
+                          (delete "Other"
+                                  (delq nil (mapcar #'my/group-of
+                                                    (seq-filter #'buffer-file-name (buffer-list))))))))
     (my/session-save root))
   (setq my/sessions (seq-take my/sessions 30))
   (ignore-errors
@@ -566,12 +549,14 @@ files you had open there; a new folder shows its README instead."
          (root (or (my/project-root-of dir) dir))
          (open (my/project-file-buffers root)))
     (setq my/explorer-shown-once t)
-    (cond (open (switch-to-buffer (car open)))   ; already open: just switch to it
-          ((my/session-restore root))
-          (t (let ((readme (seq-find #'file-exists-p
-                                     (mapcar (lambda (n) (expand-file-name n dir))
-                                             '("README.md" "README" "readme.md")))))
-               (if readme (find-file readme) (dired dir)))))
+    (add-to-list 'my/open-folders root)
+    (let ((my/opening-group root))               ; files opened here get ROOT's tabs
+      (cond (open (switch-to-buffer (car open))) ; already open: just switch to it
+            ((my/session-restore root))
+            (t (let ((readme (seq-find #'file-exists-p
+                                       (mapcar (lambda (n) (expand-file-name n dir))
+                                               '("README.md" "README" "readme.md")))))
+                 (if readme (find-file readme) (dired dir))))))
     (my/session-touch root)
     (when (project-current) (my/explorer-show))))
 
@@ -582,7 +567,9 @@ the other files you had open there."
     (if (or (null root) (my/project-file-buffers root))
         (find-file file)
       (setq my/explorer-shown-once t)
-      (my/session-restore root file)
+      (add-to-list 'my/open-folders root)
+      (let ((my/opening-group root))
+        (my/session-restore root file))
       (my/session-touch root)
       (my/explorer-show))))
 (setq recentf-menu-action #'my/open-recent-file)
@@ -591,9 +578,11 @@ the other files you had open there."
   "Cmd+K F like VS Code: close the current folder's files and the explorer.
 They come back the next time you open the folder."
   (interactive)
-  (let ((root (or (my/buffer-project-root)
-                  (with-current-buffer (my/task-buffer) (my/buffer-project-root))
+  (let ((root (or (and buffer-file-name (my/group-of (current-buffer)))
+                  (my/buffer-project-root)
+                  (when-let* ((buf (my/task-buffer))) (my/group-of buf))
                   (user-error "No folder is open"))))
+    (setq my/open-folders (delete root my/open-folders))
     (my/session-save root)
     (my/session-touch root)
     (my/sessions-write)
@@ -753,6 +742,11 @@ Without this, the explorer closes every buffer visiting a moved file."
 
 (keymap-global-set "C-`" #'my/terminal-toggle)        ; Ctrl+`
 
+(set-face-attribute 'default nil
+                    :font "Hack"
+                    :height 130
+                    :weight 'regular)
+
 (use-package eat
   :ensure t
   :defer t
@@ -850,32 +844,20 @@ Without this, the explorer closes every buffer visiting a moved file."
     (goto-char (point-min))
     (re-search-forward my/main-regexp nil t)))
 
-(defun my/main-files (dir)
-  "The .c files in DIR (subfolders too) that define main()."
-  (seq-filter #'my/defines-main-p (directory-files-recursively dir "\\.c\\'")))
-
 (defun my/program-folder (file root)
-  "Program FILE belongs to, relative to ROOT (what %p becomes). Same
-rules as the Makefile:
-- a folder with a main.c is one program: hello/greet.c -> \"hello\";
-- any other .c / .cpp file with its own main() is a program on its own:
-  exercises/sum.c -> \"exercises/sum\". That includes a main.c next to
-  other files with a main(): pointers/main.c -> \"pointers/main\";
+  "Program FILE belongs to, relative to ROOT (what %p becomes):
+- a .c / .cpp file with its own main(), other than main.c, is a program
+  on its own: exercises/sum.c -> \"exercises/sum\";
+- else the nearest folder at or above FILE that has a main.c: \"hello\";
 - else (shared code) the program used last in this project."
-  (let* ((dir (when-let* ((d (locate-dominating-file file "main.c"))
-                          ((file-in-directory-p d root)))
-                d))
-         ;; A main.c that shares its folder with other main() files is
-         ;; just one of several one-file programs there.
-         (shared (and dir (cdr (my/main-files dir))))
-         (program
-          (cond
-           ((and (member (file-name-extension file) '("c" "cc" "cpp"))
-                 (or shared (not (equal (file-name-nondirectory file) "main.c")))
-                 (my/defines-main-p file))
-            (file-name-sans-extension (file-relative-name file root)))
-           ((and dir (not shared))
-            (directory-file-name (file-relative-name dir root))))))
+  (let ((program
+         (if (and (member (file-name-extension file) '("c" "cc" "cpp"))
+                  (not (equal (file-name-nondirectory file) "main.c"))
+                  (my/defines-main-p file))
+             (file-name-sans-extension (file-relative-name file root))
+           (when-let* ((dir (locate-dominating-file file "main.c"))
+                       ((file-in-directory-p dir root)))
+             (directory-file-name (file-relative-name dir root))))))
     (if program
         (setf (alist-get root my/last-program nil nil #'equal) program)
       (or (alist-get root my/last-program nil nil #'equal)
@@ -1275,7 +1257,6 @@ int32_t, ... built-in types, but those are ordinary type names.")
 ;; Ctrl+\\=`       terminal            Cmd+J        bottom panel
 ;; Cmd+K Cmd+T  light / dark theme  Cmd+K Cmd+I  hover info at cursor
 ;; F5           build + debug       Shift+F5     stop
-;; Cmd+= Cmd+-  text size           Cmd+0        default text size
 
 ")
 
@@ -1402,9 +1383,10 @@ int32_t, ... built-in types, but those are ordinary type names.")
   (centaur-tabs-cycle-scope 'tabs)
   :config
   ;; Like VS Code: tabs only for files, and only for the current folder's
-  ;; files (other folders' files stay open in the background).
+  ;; files (other folders' files stay open in the background). A file
+  ;; dragged in from elsewhere joins the current folder's tabs.
   (setq centaur-tabs-buffer-groups-function
-        (lambda () (list (or (my/buffer-project-root) "Other")))
+        (lambda () (list (or (my/group-of (current-buffer)) "Other")))
         centaur-tabs-buffer-list-function
         (lambda () (seq-filter #'buffer-file-name (buffer-list)))
         centaur-tabs-hide-tab-function (lambda (buf) (not (buffer-file-name buf))))
