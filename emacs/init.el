@@ -135,7 +135,7 @@
 ;; "JetBrains Mono". On every Mac: "Menlo". Ubuntu Mono is drawn smaller;
 ;; give it a size of about 15.
 (defvar my/font "Hack")
-(defvar my/font-size 14)                ; points
+(defvar my/font-size 15)                ; points
 
 ;; Used when `my/font' isn't installed: the first one that is.
 (defvar my/font-fallbacks '("JetBrains Mono" "SF Mono" "Menlo"))
@@ -621,6 +621,42 @@ They come back the next time you open the folder."
     (define-key-after menu-bar-file-menu [my-recent-folders]
       `(menu-item "Open Recent Folder" ,(make-sparse-keymap) :filter my/recent-folders-menu)
       key)))
+
+;; Window size and position, remembered like VS Code: saved when you quit,
+;; restored at startup. Kept per Mac in ~/.emacs.d/frame-geometry.eld (not in
+;; dotfiles), so the ultrawide and the 24" each keep their own.
+(defvar my/frame-geometry-file (locate-user-emacs-file "frame-geometry.eld"))
+
+(defun my/frame-geometry-save ()
+  "Remember the Emacs window's size, position and full-screen state."
+  (let ((f (selected-frame)))
+    (when (display-graphic-p f)
+      (let ((pos (frame-position f)))
+        (ignore-errors
+          (with-temp-file my/frame-geometry-file
+            (prin1 (list :left (car pos) :top (cdr pos)
+                         :width (frame-text-width f) :height (frame-text-height f)
+                         :fullscreen (frame-parameter f 'fullscreen))
+                   (current-buffer))))))))
+(add-hook 'kill-emacs-hook #'my/frame-geometry-save)
+
+(defun my/frame-geometry-restore ()
+  "Put the Emacs window back where it was when you quit."
+  (when-let* (((display-graphic-p))
+              (g (ignore-errors
+                   (with-temp-buffer
+                     (insert-file-contents my/frame-geometry-file)
+                     (read (current-buffer))))))
+    (let ((f (selected-frame))
+          (fs (plist-get g :fullscreen)))
+      (if (memq fs '(maximized fullboth fullscreen))
+          (set-frame-parameter f 'fullscreen fs)
+        (set-frame-size f (plist-get g :width) (plist-get g :height) t)
+        ;; Only if it is still on screen (e.g. not after unplugging a monitor).
+        (when (and (< -50 (plist-get g :left) (- (display-pixel-width) 100))
+                   (< -50 (plist-get g :top) (- (display-pixel-height) 100)))
+          (set-frame-position f (plist-get g :left) (plist-get g :top)))))))
+(add-hook 'window-setup-hook #'my/frame-geometry-restore)
 
 ;; At startup, reopen the last folder, unless Emacs was opened with a file.
 (add-hook 'emacs-startup-hook
