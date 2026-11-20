@@ -192,6 +192,52 @@
   (c-ts-indent-offset 4)                ; VS Code default width
   (c-ts-mode-indent-style 'k&r))        ; default `gnu' style indents braces oddly
 ;; Real formatting comes from clangd + your project's .clang-format (C-c f).
+;; Width of indents and tabs, from the project's .clang-format.
+;;   Without one: 4-column indents with spaces (the settings above).
+;;   With one: its IndentWidth, TabWidth and UseTab, so what you type and
+;;   how tabs look match what clangd writes on save. The Linux kernel
+;;   style = indent 8, tabs 8 wide, real tab characters.
+;; The values a .clang-format inherits when it doesn't set them itself.
+(defconst my/clang-format-base-indent
+  '(("llvm" . 2) ("google" . 2) ("chromium" . 2) ("mozilla" . 2)
+    ("gnu" . 2) ("webkit" . 4) ("microsoft" . 4))
+  "IndentWidth of each clang-format BasedOnStyle.")
+
+(defun my/clang-format-settings (file)
+  "Return (INDENT-WIDTH TAB-WIDTH USE-TABS) from the .clang-format FILE."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (let (vals)
+      ;; Top-level "Key: value" lines; the first of each key wins.
+      (while (re-search-forward
+              "^\\(BasedOnStyle\\|IndentWidth\\|TabWidth\\|UseTab\\):[ \t]*\\([^ \t\n#]+\\)" nil t)
+        (unless (assoc (match-string 1) vals)
+          (push (cons (match-string 1) (downcase (match-string 2))) vals)))
+      (let ((get (lambda (k) (cdr (assoc k vals)))))
+        (list (if (funcall get "IndentWidth")
+                  (string-to-number (funcall get "IndentWidth"))
+                (alist-get (or (funcall get "BasedOnStyle") "llvm")
+                           my/clang-format-base-indent 2 nil #'equal))
+              (if (funcall get "TabWidth") (string-to-number (funcall get "TabWidth")) 8)
+              (not (member (funcall get "UseTab") '(nil "never" "false"))))))))
+
+(defun my/indent-from-clang-format ()
+  "In C / C++ files, take indent and tab widths from the nearest .clang-format."
+  (when-let* (((derived-mode-p 'c-ts-mode 'c++-ts-mode 'c-mode 'c++-mode))
+              buffer-file-name
+              (dir (locate-dominating-file buffer-file-name ".clang-format")))
+    (pcase-let ((`(,indent ,tabs ,use-tabs)
+                 (my/clang-format-settings (expand-file-name ".clang-format" dir))))
+      (when (> indent 0)
+        ;; Emacs 31 name, Emacs 29-30 name, older c-mode.
+        (dolist (var '(c-ts-indent-offset c-ts-mode-indent-offset c-basic-offset))
+          (when (boundp var) (set (make-local-variable var) indent))))
+      (when (> tabs 0) (setq-local tab-width tabs))
+      (setq-local indent-tabs-mode use-tabs)
+      ;; Indent guides measured the old width; redraw them.
+      (when (bound-and-true-p indent-bars-mode) (indent-bars-reset)))))
+;; After .dir-locals.el and .editorconfig, so the formatter's own file wins.
+(add-hook 'hack-local-variables-hook #'my/indent-from-clang-format)
 
 
 ;;;; 6. Language server: Eglot + clangd (built in) ------------------------------
@@ -201,7 +247,7 @@
 ;; Semantic highlighting (clangd coloring code by meaning, new in Emacs 31):
 ;; off, so code colors come from one place, the theme setup in section 13.
 ;; When on, clangd paints over it: every use of a variable gets colored,
-;; a static local variable gets the bold keyword color, calls get colored.
+;; a static local variable gets the keyword color, calls get colored.
 ;; Like VS Code's "editor.semanticHighlighting.enabled". t = on.
 (defvar my/semantic-highlighting nil)
 
@@ -1098,38 +1144,84 @@ Output appears in the bottom panel; you can type program input there."
 
 ;;;; 13. VS Code look ----------------------------------------------------------
 
-;; Colours.
-;;   Light: Modus Operandi. Built into Emacs, the light theme most Emacs
-;;          users run, designed for high contrast and readability.
-;;   Dark:  VS Code "Dark+".
+;; Colours. Both are Modus themes, built into Emacs.
+;;   Dark:  Modus Vivendi with One Dark colors (purple keywords, gold types,
+;;          blue functions, red declared names, green strings).
+;;   Light: Modus Operandi, designed for high contrast and readability.
 ;; Cmd+K Cmd+T switches between them.
-(defvar my/theme-mode 'light
+(defvar my/theme-mode 'dark
   "Theme at startup: `light', `dark', or `system' (follow macOS appearance).")
 (defvar my/light-theme 'modus-operandi)
-(defvar my/dark-theme 'vscode-dark-plus)
+(defvar my/dark-theme 'modus-vivendi)
 
-;; Your code colors, on top of the light theme. Change a value, restart Emacs.
-;; Keywords (if, return, static, and in C also int, void, char, unsigned):
-;; all one color, bold. Other dark pinks to try: "#8b2252" (Emacs' classic
-;; string color), "#721045" (wine).
-(defvar my/keyword-color "#a3144d")     ; Dracula's pink, darkened for light backgrounds
-(defvar my/keyword-bold t)
+;; Your code colors. Change a value, restart Emacs.
+;; Keywords (if, return, static, const): all one color, normal weight.
+;; Built-in types (int, void, long): see `my-c-builtin-type-face' below.
+(defvar my/keyword-color "#a3144d")       ; light theme: dark pink
+(defvar my/keyword-color-dark "#c678dd")  ; dark theme: One Dark purple
 
 (setq modus-operandi-palette-overrides
       `((keyword      ,my/keyword-color)
         (variable-use fg-main)))        ; a name where it's used: plain text
 
-;; Light theme only (the dark theme keeps its own look).
-(face-spec-set 'font-lock-keyword-face
-               (and my/keyword-bold '((((background light)) :weight bold)))
-               'face-override-spec)
+;; Dark theme: the colors of the One Dark screenshot.
+(setq modus-vivendi-palette-overrides
+      `(;; Background and text
+        (bg-main      "#191e22")
+        (fg-main      "#abb2bf")
+        (bg-dim       "#1f252a")        ; popups, inactive panes
+        (fg-dim       "#7f848e")
+        (cursor       "#528bff")
+        (bg-hl-line   "#22282e")        ; current line
+        (bg-region    "#3e4451")        ; selection
+        (bg-completion "#2c3440")       ; selected item in completion lists
+        (bg-paren-match "#3e4451")
+        ;; Code
+        (keyword      ,my/keyword-color-dark) ; static, return, const
+        (builtin      ,my/keyword-color-dark)
+        (preprocessor ,my/keyword-color-dark) ; #include, #define
+        (type         "#e5c07b")        ; int, void, long, gboolean, struct names
+        (fnname       "#61afef")        ; a function where it's defined
+        (fnname-call  fg-main)          ; printf(...): plain text
+        (variable     "#e06c75")        ; a name where it's declared
+        (variable-use fg-main)          ; a name where it's used: plain text
+        (property     "#e06c75")        ; struct fields where declared
+        (string       "#98c379")
+        (constant     "#56b6c2")        ; NULL, true, enum values
+        (rx-backslash "#56b6c2")        ; \n inside strings
+        (comment      "#5c6370")
+        (docstring    "#7f848e")
+        ;; Line numbers: dim, on the editor background
+        (fg-line-number-inactive "#4b5263")
+        (fg-line-number-active   "#abb2bf")
+        (bg-line-number-inactive bg-main)
+        (bg-line-number-active   bg-hl-line)
+        ;; Status bar and tabs
+        (bg-mode-line-active     "#2c323a")
+        (fg-mode-line-active     "#c8ccd0")
+        (border-mode-line-active "#2c323a")
+        (bg-mode-line-inactive   "#1f252a")
+        (fg-mode-line-inactive   "#7f848e")
+        (border-mode-line-inactive "#1f252a")
+        (bg-tab-bar     "#14181b")
+        (bg-tab-current bg-main)
+        (bg-tab-other   "#14181b")))
+
+;; Both themes.
 (face-spec-set 'font-lock-property-use-face ; p->age where used: plain text
-               '((((background light)) :inherit unspecified :foreground unspecified))
+               '((t :inherit unspecified :foreground unspecified))
                'face-override-spec)
 
-;; C / C++: built-in types are keywords of the language, so give them the
-;; keyword color too. Other types (struct names, size_t, FILE) keep the
-;; type color.
+;; C / C++ built-in types (int, void, char, long, unsigned, ...):
+;;   light theme: keyword color, as they are keywords of the language;
+;;   dark theme:  type color (gold), like struct names and size_t,
+;;                as in the One Dark screenshot.
+;; (A hyphen, not a slash, in this name: tree-sitter rules reject "/".)
+(defface my-c-builtin-type-face
+  '((((background light)) :inherit font-lock-keyword-face)
+    (t :inherit font-lock-type-face))
+  "Face for C / C++ built-in type names such as int and void.")
+
 (defvar c-ts-mode--type-keywords)
 (defconst my/c-type-keywords
   (regexp-opt '("void" "char" "short" "int" "long" "float" "double"
@@ -1140,13 +1232,14 @@ Output appears in the bottom panel; you can type program input there."
 int32_t, ... built-in types, but those are ordinary type names.")
 
 (defun my/c-types-as-keywords ()
-  "Color int, void, char, unsigned, ... (and C++ const) like keywords."
+  "Color int, void, char, unsigned, ... with `my-c-builtin-type-face',
+and C++ const like a keyword."
   (let* ((lang (if (derived-mode-p 'c++-ts-mode) 'cpp 'c))
          (rules (treesit-font-lock-rules
                  :language lang :feature 'keyword :override t
-                 `(((primitive_type) @font-lock-keyword-face
-                    (:match ,my/c-type-keywords @font-lock-keyword-face))
-                   [,@c-ts-mode--type-keywords] @font-lock-keyword-face
+                 `(((primitive_type) @my-c-builtin-type-face
+                    (:match ,my/c-type-keywords @my-c-builtin-type-face))
+                   [,@c-ts-mode--type-keywords] @my-c-builtin-type-face
                    ,@(when (eq lang 'cpp)
                        '((type_qualifier) @font-lock-keyword-face))))))
     (if (fboundp 'treesit-add-font-lock-rules) ; Emacs 31
@@ -1219,8 +1312,6 @@ int32_t, ... built-in types, but those are ordinary type names.")
   (dolist (feature '(nerd-icons nerd-icons-completion nerd-icons-dired
                      treemacs treemacs-nerd-icons))
     (with-eval-after-load feature (my/classic-ui-colors))))
-
-(use-package vscode-dark-plus-theme :ensure t :defer t)
 
 (defun my/apply-theme (appearance)
   "Load the light or dark theme. APPEARANCE is `light' or `dark'."
